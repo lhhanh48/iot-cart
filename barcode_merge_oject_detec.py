@@ -8,6 +8,10 @@ from collections import deque
 import Jetson.GPIO as GPIO
 import serial
 import serial.tools.list_ports
+import subprocess
+import os
+import time
+import threading
 
 # MQTT Configurations
 MQTT_ADDRESS = "jetson-nano.local"
@@ -54,6 +58,9 @@ GPIO.setup(buzz_pin, GPIO.OUT, initial=GPIO.HIGH)
 GPIO.setup(led_status, GPIO.OUT, initial=GPIO.HIGH)
 GPIO.setup(but_pin, GPIO.IN)  # button pin set as input
 
+# Variable
+filename = 'text.txt'
+
 def buzz():
     GPIO.output(buzz_pin, GPIO.LOW)
     time.sleep(0.05)
@@ -69,44 +76,63 @@ def barcode_scanner(client):
     serialInst.baudrate = 9600
     serialInst.port = "/dev/ttyACM0"
     serialInst.open()
-    #root = tk.Tk()
-    #root.title("Log Viewer")
+    open_file_for_editing_and_auto_reload(filename)
+    read_file(filename)
+    resize_window()
 
     while True:
         if serialInst.in_waiting:
             packet = serialInst.readline()
             decoded_packet = packet.decode('utf-8').rstrip('\n')
             print(decoded_packet)
-            #display_logs(decoded_packet, root, old_log)
             # Send packet to MQTT broker
             client.publish(MQTT_TOPIC_BARCODE, decoded_packet)
          # Check for button press to exit
         if GPIO.input(but_pin) == GPIO.LOW:
+            close_file()
             break
             
-# def update_logs(text_widget, logs):
-#     # Example: Update logs every second with the current time
-#     while True:
-#         text_widget.config(state="normal")
-#         text_widget.insert(tk.END, current_log + "\n")
-#         text_widget.config(state="disabled")
-#         text_widget.see(tk.END)  # Scroll to the end
-#         old_log = current_log  
-            
-# def display_logs(logs, root, old_log):
-
-#     text = tk.Text(root)
-#     text.pack(expand=True, fill="both")
-#     text.configure(state="disabled")
+def open_file_for_editing_and_auto_reload(file_name):
+    command = f'gedit {file_name}'
     
-#     # Start a thread to update the logs
-#     update_thread = threading.Thread(target=update_logs, args=(text,logs))
-#     update_thread.daemon = True  # Daemonize the thread
-#     update_thread.start()
+    subprocess.Popen(command, shell=True)
+            
+def close_file():
+    os.system("xdotool search --class gedit windowkill")
 
-#     root.mainloop()
+def read_file(file_name):
 
+    with open(file_name, 'r') as f:
+        f.read()
 
+def resize_window():
+
+    window_id = get_window_id()
+
+    while not window_id:
+        time.sleep(0.15)
+        window_id = get_window_id()
+
+    if window_id:
+        os.system(f"xdotool windowmove {window_id} 2160 1440")
+        os.system(f"xdotool windowsize {window_id} 240 50")
+
+def get_window_id():
+    # Command to get the window ID
+    try:
+        # Command to get the window IDs of Gedit
+        window_id_command = "xdotool search --class gedit"
+        window_id_output = subprocess.check_output(window_id_command, shell=True)
+        window_ids = window_id_output.decode().strip().split()
+        
+        # Check if there are at least two window IDs
+        if len(window_ids) >= 2:
+            # Return the second window ID
+            return window_ids[1]
+        else:
+            return None
+    except subprocess.CalledProcessError:
+        return None
 
 def object_detection(client):
     # YOLO Model Configurations
@@ -138,43 +164,42 @@ def object_detection(client):
                 current_positions[obj_class] = (center_x, center_y)
                 position_history[obj_class].append((center_x, center_y))
 
-                if obj_class in class_to_barcode:
-                    if len(position_history[obj_class]) == position_history[obj_class].maxlen:
-                        prev_positions = list(position_history[obj_class])
-                        prev_x_positions = [pos[0] for pos in prev_positions]
-                        prev_y_positions = [pos[1] for pos in prev_positions]
+                if obj_class in class_to_barcode and len(position_history[obj_class]) == position_history[obj_class].maxlen:
+                    prev_positions = list(position_history[obj_class])
+                    prev_x_positions = [pos[0] for pos in prev_positions]
+                    prev_y_positions = [pos[1] for pos in prev_positions]
 
-                        # Check for vertical movements only (ignoring horizontal movements)
-                        if all(prev_y_positions[i] < prev_y_positions[i+1] for i in range(len(prev_y_positions) - 1)):  # Moving down
-                            if movement_states.get(obj_class) != 'down':
-                                barcode = class_to_barcode[obj_class]
-                                client.publish(MQTT_TOPIC_BARCODE, barcode)
-                                movement_states[obj_class] = 'down'
-                                buzz()
-                        elif all(prev_y_positions[i] > prev_y_positions[i+1] for i in range(len(prev_y_positions) - 1)):  # Moving up
-                            if movement_states.get(obj_class) != 'up':
-                                barcode = class_to_barcode[obj_class]
-                                client.publish(MQTT_TOPIC_REMOVE, barcode)
-                                movement_states[obj_class] = 'up'
-                                buzz()
-                        else:
-                            movement_states[obj_class] = 'stationary'
+                    # Check for vertical movements only (ignoring horizontal movements)
+                    if all(prev_y_positions[i] < prev_y_positions[i+1] for i in range(len(prev_y_positions) - 1)):  # Moving down
+                        if movement_states.get(obj_class) != 'down':
+                            barcode = class_to_barcode[obj_class]
+                            client.publish(MQTT_TOPIC_BARCODE, barcode)
+                            movement_states[obj_class] = 'down'
+                            buzz()
+                    elif all(prev_y_positions[i] > prev_y_positions[i+1] for i in range(len(prev_y_positions) - 1)):  # Moving up
+                        if movement_states.get(obj_class) != 'up':
+                            barcode = class_to_barcode[obj_class]
+                            client.publish(MQTT_TOPIC_REMOVE, barcode)
+                            movement_states[obj_class] = 'up'
+                            buzz()
+                    else:
+                        movement_states[obj_class] = 'stationary'
 
                         # Reset history if horizontal movement detected to avoid false positives
-                        if any(prev_x_positions[i] != prev_x_positions[i+1] for i in range(len(prev_x_positions) - 1)):
-                            position_history[obj_class].clear()
+                    if any(prev_x_positions[i] != prev_x_positions[i+1] for i in range(len(prev_x_positions) - 1)):
+                        position_history[obj_class].clear()
 
-                    # Draw a crosshair at the center of the bounding box
-                    cv2.line(frame, (center_x - 5, center_y), (center_x + 5, center_y), (0, 0, 255), 2)
-                    cv2.line(frame, (center_x, center_y - 5), (center_x, center_y + 5), (0, 0, 255), 2)
+                # Draw a crosshair at the center of the bounding box
+                cv2.line(frame, (center_x - 5, center_y), (center_x + 5, center_y), (0, 0, 255), 2)
+                cv2.line(frame, (center_x, center_y - 5), (center_x, center_y + 5), (0, 0, 255), 2)
 
             else:
                 print(f"box not found in object: {obj}")
 
         previous_positions = current_positions.copy()
-
         # Display the output frame
-        cv2.imshow("Output", frame)
+        cv2.imshow("Screen display object for shopping", frame)
+        cv2.moveWindow("Screen display object for shopping", 2160, 1440)
         key = cv2.waitKey(1)
         if GPIO.input(but_pin) == GPIO.LOW or key == ord('q'):  # Add button press to exit condition
             break
