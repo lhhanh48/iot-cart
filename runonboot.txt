@@ -1,0 +1,18 @@
+- tạo file startup.sh 
+- test file: sh startup.sh
+- tạo .desktop file -> chạy nó trên màn hình GUI( tự động bật cửa sổ terminal)
+
+mkdir -p ~/.config/autostart
+nano ~/.config/autostart/run_script.desktop
+
+- trong file desktop:
+
+[Desktop Entry]
+Type=Application
+Exec=gnome-terminal -- /path/to/your/script.sh
+Hidden=false 
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+Name=Run Script
+Comment=Open terminal and run script at startup
+
